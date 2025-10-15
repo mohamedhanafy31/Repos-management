@@ -1,103 +1,220 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+import { useState, useEffect, useCallback } from 'react';
+import { GitHubUser, GitHubRepository } from '@/lib/github';
+import GitHubApiClient from '@/lib/github';
+import ProfileCard from '@/components/ProfileCard';
+import RepositoryList from '@/components/RepositoryList';
+import RepositoryDetails from '@/components/RepositoryDetails';
+import CredentialsPage from '@/components/CredentialsPage';
+import { useCredentials } from '@/contexts/CredentialsContext';
+import { AlertCircle, Loader2, RefreshCw, LogOut } from 'lucide-react';
+import ThemeToggle from '@/components/ThemeToggle';
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+export default function GitHubManager() {
+  const { credentials, setCredentials, clearCredentials, isLoading: credentialsLoading } = useCredentials();
+  const [user, setUser] = useState<GitHubUser | null>(null);
+  const [repositories, setRepositories] = useState<GitHubRepository[]>([]);
+  const [selectedRepository, setSelectedRepository] = useState<GitHubRepository | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deletingRepoId, setDeletingRepoId] = useState<number | null>(null);
+  const [githubClient, setGithubClient] = useState<GitHubApiClient | null>(null);
+
+  // Initialize GitHub client when credentials are available
+  useEffect(() => {
+    if (credentials) {
+      const client = new GitHubApiClient(credentials.token);
+      setGithubClient(client);
+    } else {
+      setGithubClient(null);
+    }
+  }, [credentials]);
+
+  const loadData = useCallback(async () => {
+    if (!githubClient) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      if (!credentials) return;
+      
+      // Load user and repositories in parallel
+      const [userData, reposData] = await Promise.all([
+        githubClient.getUser(credentials.username),
+        githubClient.getAllUserRepositories(credentials.username)
+      ]);
+
+      setUser(userData);
+      setRepositories(reposData);
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(errorMessage || 'Failed to load GitHub data');
+    } finally {
+      setLoading(false);
+    }
+  }, [githubClient, credentials]);
+
+  useEffect(() => {
+    if (githubClient && credentials) {
+      loadData();
+    }
+  }, [githubClient, credentials, loadData]);
+
+  const handleViewRepository = (repo: GitHubRepository) => {
+    setSelectedRepository(repo);
+  };
+
+  const handleBackToList = () => {
+    setSelectedRepository(null);
+  };
+
+  const handleDeleteRepository = async (repo: GitHubRepository) => {
+    if (!githubClient) return;
+
+    setDeletingRepoId(repo.id);
+
+    try {
+      await githubClient.deleteRepository(repo.full_name.split('/')[0], repo.name);
+      
+      // Remove from local state
+      setRepositories(prev => prev.filter(r => r.id !== repo.id));
+      
+      // If this was the selected repository, go back to list
+      if (selectedRepository?.id === repo.id) {
+        setSelectedRepository(null);
+      }
+      
+      // Update user's repository count
+      if (user) {
+        setUser(prev => prev ? { ...prev, public_repos: prev.public_repos - 1 } : null);
+      }
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(errorMessage || 'Failed to delete repository');
+    } finally {
+      setDeletingRepoId(null);
+    }
+  };
+
+  const handleRefresh = () => {
+    loadData();
+  };
+
+  const handleLogout = () => {
+    clearCredentials();
+    setUser(null);
+    setRepositories([]);
+    setSelectedRepository(null);
+    setError(null);
+  };
+
+  // Show loading while checking for stored credentials
+  if (credentialsLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600 dark:text-gray-400">Loading...</p>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
+      </div>
+    );
+  }
+
+  // Show credentials page if no credentials are available
+  if (!credentials) {
+    return <CredentialsPage onCredentialsSet={setCredentials} />;
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600 dark:text-gray-400">Loading GitHub data...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+        <div className="max-w-md mx-auto text-center">
+          <AlertCircle className="w-12 h-12 text-red-600 mx-auto mb-4" />
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">Error</h2>
+          <p className="text-gray-600 dark:text-gray-400 mb-4">{error}</p>
+          <button
+            onClick={handleRefresh}
+            className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors mx-auto"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span>Try Again</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-gray-600 dark:text-gray-400">No user data available</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Header */}
+        <div className="mb-8">
+          <div className="flex items-center justify-between">
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">GitHub Repository Manager</h1>
+            <div className="flex items-center space-x-3">
+              <ThemeToggle />
+              <button
+                onClick={handleRefresh}
+                className="flex items-center space-x-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>Refresh</span>
+              </button>
+              <button
+                onClick={handleLogout}
+                className="flex items-center space-x-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Logout</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {selectedRepository ? (
+          <RepositoryDetails
+            repository={selectedRepository}
+            onBack={handleBackToList}
+            onDelete={handleDeleteRepository}
           />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+        ) : (
+          <div className="space-y-8">
+            {/* Profile Card */}
+            <ProfileCard user={user} />
+
+            {/* Repository List */}
+            <RepositoryList
+              repositories={repositories}
+              onViewRepository={handleViewRepository}
+              onDeleteRepository={handleDeleteRepository}
+              deletingRepoId={deletingRepoId ?? undefined}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
